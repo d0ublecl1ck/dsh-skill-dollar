@@ -68,6 +68,33 @@ The client half is browser-side and cannot be proven by G5; verify it by
 opening the web app, typing `$` in the composer, and confirming the skill menu
 appears and a pick loads the skill.
 
+## Blue text-ref decoration (`$` parity with `/`)
+
+The composer's blue "this is a reference" treatment is produced by a
+plain-text scan in `@deepseek-ai/dsh-client-ui-conversation`. Its token regex
+is hard-coded to `/` and `@`, and the trigger set is closed there — the
+input-trigger lexicon is already keyed by arbitrary trigger strings, and this
+plugin already publishes its skill names under `$`, but the scan never looks
+for `$`. There is no plugin API to register another text-ref trigger, so exact
+parity needs a small core change:
+
+- `TEXT_REF_RE` becomes `/(^|\s)([/@$])([\w-]+)/g`;
+- the `/`-only end-boundary rule (a token must end at whitespace or the draft
+  end) is applied to `$` as well.
+
+`patch-core.mjs` applies both substitutions idempotently:
+
+```sh
+node patch-core.mjs            # resolve the bundle from the dsh install
+node patch-core.mjs --check    # exit non-zero when the patch is missing
+node patch-core.mjs --file <client.js>
+```
+
+This is a core patch, so re-run it after a DSH upgrade (a new npx cache
+directory ships the unpatched file). The plugin itself stays installable;
+only the decoration needs the patch — the `$` menu and host injection work
+without it.
+
 ## Design notes
 
 - The trigger char is deliberately fixed at `$`. The host and client halves must
