@@ -1,0 +1,6 @@
+# FREAK
+
+- [ ] `index.js` `installClientBundlePatch` — 依赖 `ClientModuleRegistry` 的 `bundleResource` / `captureArtifactBaseline` / `rebuilt`；DSH 升级后先核对方法名、`bundleResource` 的同步/异步契约，以及 `artifactRevision` 是否仍由文件元数据派生。记录：2026-09-26
+- [ ] `bundle-patch.mjs` — `ORIGINAL_TEXT_REF_RE` / `ORIGINAL_SLASH_END` 是按 conversation 当前构建逐字匹配；上游改扫描实现、缩进或压缩后需重取字面量，否则补丁会静默失效。记录：2026-09-26
+- [ ] `README.md §Install into DSH Desktop` — Desktop 走 generation 快照 + 重启 harness；下次核对文档步骤与 `dsh-desktop-market-installer` 的 `restartHarness` / `Cmd+Shift+R` 行为一致。记录：2026-09-26
+- [ ] `patch-core.mjs` + README 的 0.1.5 兜底段 — 若上游把 revision 改成元数据派生（或 web 升到 0.1.7+），删除兜底路径与对应说明。记录：2026-09-26
