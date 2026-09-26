@@ -66,11 +66,13 @@ on macOS — and snapshots every installed plugin into a content-addressed
   only picked up after the profile is refreshed and Desktop restarts.
 
 After editing this repo, reinstall/update `dsh-skill-dollar` in Desktop's
-profile (its plugin market or settings surface) so a new generation is built,
-then restart DSH Desktop. The version is bumped with each behavior change so
-the update is visible. Nothing else needs a manual step: the decoration is
-applied at boot by the plugin's host half (see below), never by editing a file
-inside the app bundle.
+profile (its plugin market or settings surface) so a new generation is built.
+Generation installs are restart-based: the running harness keeps the code it
+booted with, so press **Cmd/Ctrl+Shift+R** ("Restart Harness") — or quit and
+reopen DSH Desktop — to load the new generation. The version is bumped with
+each behavior change so the update is visible. Nothing else needs a manual
+step: the decoration is applied at boot by the plugin's host half (see below),
+never by editing a file inside the app bundle.
 
 ## Verify
 
