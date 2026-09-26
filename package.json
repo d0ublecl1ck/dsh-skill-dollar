@@ -1,6 +1,6 @@
 {
   "name": "dsh-skill-dollar",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -12,9 +12,13 @@
   "files": [
     "index.js",
     "client.js",
+    "bundle-patch.mjs",
     "patch-core.mjs",
     "cordis.patch.yml"
   ],
+  "scripts": {
+    "test": "node test-bundle-patch.mjs"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

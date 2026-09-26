@@ -11,8 +11,12 @@
  * literal substitutions are enough to make the existing pipeline decorate
  * `$name` exactly like `/name`.
  *
- * This is a core patch, not part of the plugin bundle: re-run it after a DSH
- * upgrade (a new npx cache directory has the unpatched file).
+ * LEGACY FALLBACK. The plugin now teaches the served bundle about `$` at
+ * runtime from its host half (index.js), so a host with a `clientModules`
+ * service needs no file edit — including DSH Desktop, whose app.asar is
+ * integrity-sealed. This script remains for hosts that predate that service,
+ * and for debugging: re-run it after a DSH upgrade, since a new cache
+ * directory ships the unpatched file.
  *
  * Usage:
  *   node patch-core.mjs                 # locate the bundle from the dsh install
@@ -22,11 +26,8 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { isPatchedConversationBundle, patchConversationBundle } from './bundle-patch.mjs'
 
-const ORIGINAL_RE = 'const TEXT_REF_RE = /(^|\\s)([/@])([\\w-]+)/g;'
-const PATCHED_RE = 'const TEXT_REF_RE = /(^|\\s)([/@$])([\\w-]+)/g;'
-const ORIGINAL_END = 'if (trigger === "/" && !SLASH_TOKEN_END_RE.test(draft.slice(m.index + m[0].length))) continue;'
-const PATCHED_END = 'if ((trigger === "/" || trigger === "$") && !SLASH_TOKEN_END_RE.test(draft.slice(m.index + m[0].length))) continue;'
 
 /**
  * Parse CLI arguments.
@@ -81,7 +82,7 @@ if (args.help) {
 
 const file = args.file !== undefined ? args.file : locateBundle()
 const source = readFileSync(file, 'utf8')
-const alreadyPatched = source.includes(PATCHED_RE) && source.includes(PATCHED_END)
+const alreadyPatched = isPatchedConversationBundle(source)
 
 if (alreadyPatched) {
   console.log('already patched: ' + file)
@@ -91,13 +92,10 @@ if (args.check) {
   console.error('MISSING patch: ' + file)
   process.exit(1)
 }
-if (!source.includes(ORIGINAL_RE) || !source.includes(ORIGINAL_END)) {
+const next = patchConversationBundle(source)
+if (next === source) {
   console.error('cannot patch: expected patterns not found in ' + file)
   process.exit(1)
 }
-
-const next = source
-  .replace(ORIGINAL_RE, () => PATCHED_RE)
-  .replace(ORIGINAL_END, () => PATCHED_END)
 writeFileSync(file, next)
 console.log('patched: ' + file)

@@ -1,4 +1,11 @@
 import { randomUUID } from 'node:crypto'
+import {
+  CONVERSATION_PACKAGE,
+  ORIGINAL_TEXT_REF_RE,
+  TEXT_REF_PATCH_SALT_MS,
+  isConversationBundlePath,
+  patchConversationBundle,
+} from './bundle-patch.mjs'
 
 /**
  * Host half of dsh-skill-dollar.
@@ -28,12 +35,186 @@ export const inject = ['skills']
 const SKILL_GESTURE = /(^|\s)\$([a-z0-9]+(?:-[a-z0-9]+)*)(?=\s|$)/g
 
 /**
+ * Install the host-side half of the `$` plain-text reference decoration.
+ *
+ * The conversation client bundle is served from ClientModuleRegistry, which
+ * snapshots every bundle in memory at boot. Wrapping `bundleResource` lets
+ * this plugin rewrite the served bytes on the way out — no file on disk changes,
+ * so DSH Desktop's integrity-sealed app.asar and the code signature stay
+ * intact.
+ *
+ * The browser caches immutable `/plugins` URLs for a year, so serving
+ * different bytes under the same URL is not enough. Wrapping
+ * `captureArtifactBaseline` salts the conversation row's revision, and one
+ * `rebuilt()` call recomposes the graph with a fresh URL that forces the
+ * fetch. Bump TEXT_REF_PATCH_VERSION in bundle-patch.mjs to change it again.
+ * @param ctx - host plugin context.
+ */
+export function installClientBundlePatch(ctx) {
+  ctx.inject(['clientModules'], (clientCtx) => {
+    const registry = clientCtx?.clientModules ?? ctx.clientModules
+    if (registry === null || registry === undefined || typeof registry !== 'object') return
+    if (registry[REGISTRY_PATCH_FLAG] === true) return
+
+    const bundleResource = registry.bundleResource
+    if (typeof bundleResource !== 'function') {
+      console.error('[skill-dollar] clientModules.bundleResource is unavailable; run `node patch-core.mjs` to decorate `$name` tokens')
+      return
+    }
+
+    const captureArtifactBaseline = registry.captureArtifactBaseline
+    if (typeof captureArtifactBaseline === 'function') {
+      registry.captureArtifactBaseline = function (clientPath) {
+        const baseline = captureArtifactBaseline.call(this, clientPath)
+        if (
+          baseline !== null &&
+          typeof baseline === 'object' &&
+          isConversationBundlePath(clientPath) &&
+          Number.isFinite(baseline.mtimeMs)
+        ) {
+          baseline.mtimeMs += TEXT_REF_PATCH_SALT_MS
+        }
+        return baseline
+      }
+      if (typeof registry.rebuilt === 'function') {
+        const conversationId = conversationEntryId(registry)
+        const beforeRev = entryRevision(registry, conversationId)
+        try {
+          registry.rebuilt(conversationId)
+        } catch (error) {
+          console.error('[skill-dollar] could not refresh the composer bundle revision', error)
+        }
+        const afterRev = entryRevision(registry, conversationId)
+        if (beforeRev !== undefined && beforeRev === afterRev && isUnpatchedBundle(registry, conversationId)) {
+          console.error('[skill-dollar] this host derives bundle revisions from content, so the in-memory decoration cannot bust the browser cache; run `node patch-core.mjs` once, then restart')
+        }
+      }
+    }
+
+    registry.bundleResource = function (method, url) {
+      const response = bundleResource.call(this, method, url)
+      if (response !== null && typeof response === 'object' && typeof response.then === 'function') {
+        return response.then((resolved) => patchBundleResponse(method, url, resolved))
+      }
+      return patchBundleResponse(method, url, response)
+    }
+    Object.defineProperty(registry, REGISTRY_PATCH_FLAG, { value: true })
+  })
+}
+
+/**
+ * One row's current revision, when the registry exposes its table.
+ * @param registry - ClientModuleRegistry instance.
+ * @param id - graph row id.
+ * @returns the revision, or undefined.
+ */
+function entryRevision(registry, id) {
+  const table = registry.table
+  if (table === undefined || table === null || typeof table.get !== 'function') return undefined
+  const record = table.get(id)
+  return record === undefined || record === null ? undefined : record.entry?.rev
+}
+
+/**
+ * Whether the row's on-disk bundle still carries the unpatched scan.
+ * @param registry - ClientModuleRegistry instance.
+ * @param id - graph row id.
+ * @returns whether a disk patch is still required on this host.
+ */
+function isUnpatchedBundle(registry, id) {
+  const table = registry.table
+  if (table === undefined || table === null || typeof table.get !== 'function') return false
+  const record = table.get(id)
+  if (record === undefined || record === null || record.bundle === undefined || record.bundle === null) return false
+  const source = decodeBundle(record.bundle)
+  return source !== undefined && source.includes(ORIGINAL_TEXT_REF_RE)
+}
+
+/**
+ * The graph row id of the conversation package. Client module ids are package
+ * names, but reading the registry's own table keeps this correct if that ever
+ * changes; the bare package name is the fallback.
+ * @param registry - ClientModuleRegistry instance.
+ * @returns the row id to recompose.
+ */
+function conversationEntryId(registry) {
+  const table = registry.table
+  if (table !== undefined && table !== null && typeof table.keys === 'function') {
+    for (const id of table.keys()) {
+      if (typeof id === 'string' && id.includes(CONVERSATION_PACKAGE)) return id
+    }
+  }
+  return CONVERSATION_PACKAGE
+}
+
+/**
+ * Rewrite one served client-module response.
+ * @param method - HTTP verb; HEAD carries no body.
+ * @param url - immutable plugin URL, used as the patch cache key.
+ * @param response - `bundleResource` result.
+ * @returns the response, with patched JavaScript bytes when the scan is present.
+ */
+function patchBundleResponse(method, url, response) {
+  if (method === 'HEAD' || response === null || response === undefined) return response
+  const body = response.body
+  if (body === undefined || body === null) return response
+  const headers = response.headers
+  const contentType = headers === undefined || headers === null ? undefined : headers['content-type']
+  if (typeof contentType === 'string' && contentType !== '' && !contentType.startsWith('text/javascript')) {
+    return response
+  }
+  const cacheKey = typeof url === 'string' ? url : undefined
+  if (cacheKey !== undefined) {
+    const cached = patchedBodies.get(cacheKey)
+    if (cached !== undefined) return { ...response, body: cached }
+  }
+  const source = decodeBundle(body)
+  if (source === undefined || !source.includes(ORIGINAL_TEXT_REF_RE)) return response
+  const patched = patchConversationBundle(source)
+  if (patched === source) return response
+  const bytes = bundleEncoder.encode(patched)
+  if (cacheKey !== undefined) {
+    if (patchedBodies.size >= PATCHED_BODY_LIMIT) {
+      const oldest = patchedBodies.keys().next().value
+      if (oldest !== undefined) patchedBodies.delete(oldest)
+    }
+    patchedBodies.set(cacheKey, bytes)
+  }
+  return { ...response, body: bytes }
+}
+
+/**
+ * Decode a served bundle body.
+ * @param body - bytes or text from a client-module response.
+ * @returns the decoded text, or undefined when the body cannot be decoded.
+ */
+function decodeBundle(body) {
+  if (typeof body === 'string') return body
+  try {
+    return bundleDecoder.decode(body)
+  } catch {
+    return undefined
+  }
+}
+
+/** Own-property marker so a reload cycle never double-wraps the registry. */
+const REGISTRY_PATCH_FLAG = '__skillDollarBundlePatch'
+
+const bundleDecoder = new TextDecoder()
+const bundleEncoder = new TextEncoder()
+
+/** Patched bodies keyed by immutable plugin URL, so a combo is decoded once. */
+const patchedBodies = new Map()
+const PATCHED_BODY_LIMIT = 32
+
+/**
  * Append the loaded skill body for every `$name` gesture in the claimed user
  * messages. Runs as a pre-step middleware after the downstream decision, so it
  * cannot alter tool policy or reordering performed by other plugins.
  * @param ctx - plugin context carrying the `skills` service.
  */
 export function apply(ctx) {
+  installClientBundlePatch(ctx)
   ctx.on('agent/pre-step', async ({ agent, messages, signal }, next) => {
     const decision = await next()
     if (decision.kind === 'reject') return decision
