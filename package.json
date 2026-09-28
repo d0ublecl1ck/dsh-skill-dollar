@@ -1,6 +1,6 @@
 {
   "name": "dsh-skill-dollar",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -14,14 +14,22 @@
     "client.js",
     "bundle-patch.mjs",
     "patch-core.mjs",
+    "check-core-surface.mjs",
     "cordis.patch.yml"
   ],
   "scripts": {
-    "test": "node test-bundle-patch.mjs"
+    "test": "node --test",
+    "check:core": "node check-core-surface.mjs"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.1.5-rc.3": "compatible",
+        "0.1.7-rc.2": "compatible"
+      }
     },
     "client": {
       "platform": "web",

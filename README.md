@@ -11,9 +11,11 @@ host-side injection that the `/` skill path uses.
 
 - **Client half (`client.js`)** registers a candidate source under the trigger
   char `$` over the session skill catalog (`skills/list`). Typing `$` in the
-  composer opens the normal trigger menu (title "Skills" / "技能") filtered by
-  an ordered-subsequence query. Picking a row inserts the literal text
-  `$skill-name `.
+  composer opens the normal trigger menu (title "Skills" / "技能"). Candidates
+  are ordered by match quality first — name prefix, name substring, name
+  subsequence, then description-only — and ties prefer the most recently picked
+  skill, then the most frequently picked, then the host's own order. Picking a
+  row inserts the literal text `$skill-name `.
 - **Host half (`index.js`)** listens on `agent/pre-step`, recognises the
   whitespace-bounded `$name` token in direct user messages, resolves it through
   the `skills` service, and appends the canonical `<skill_content>` block —
@@ -37,9 +39,11 @@ span CAS insertion) is keyed by an opaque trigger string. The client half:
    without forking the core package.
 
 When no `$token` is live the original `track` runs untouched, so `/` and `@`
-behaviour is unchanged. If the core module shape ever changes, the patch
-degrades to a console error and the host half still makes a hand-typed `$name`
-work.
+behaviour is unchanged. Both halves depend on literals DSH may reformat, so
+neither fails silently: `check-core-surface.mjs` reports drift with a non-zero
+exit, the client half logs a console error when the controller shape is gone,
+and the host half warns once per served bundle when the reference scan no
+longer matches. The host half still makes a hand-typed `$name` work.
 
 ## Install into a profile
 
@@ -76,16 +80,18 @@ never by editing a file inside the app bundle.
 
 ## Verify
 
-Host composition and activation:
+Repo-local, no external tooling:
 
 ```sh
-node <create-dsh-plugin-skill>/scripts/verify-dsh-plugin.mjs --plugin-dir .
+node --test                  # transform, drift guard, registry hook, ranking
+node check-core-surface.mjs  # DSH core anchors still hold (non-zero on drift)
 ```
 
-The ladder covers G1 manifest, G2 shape, G3 install, G4 compose, G5 activate.
-The client half is browser-side and cannot be proven by G5; verify it by
-opening the web app, typing `$` in the composer, and confirming the skill menu
-appears and a pick loads the skill.
+`node --test` asserts the textual transform, the served-bytes hook, the drift
+warning, and the pure ranking/usage helpers against fixtures, and it re-runs
+the transform against every DSH install it can find on this machine. The client
+half is browser-side: verify it by opening the web app, typing `$` in the
+composer, and confirming the skill menu appears and a pick loads the skill.
 
 ## Blue text-ref decoration (`$` parity with `/`)
 
@@ -149,6 +155,31 @@ node patch-core.mjs --file <client.js>
 Re-run it after a DSH upgrade only if you are on such a host; on DSH 0.1.7+ the
 served-at-runtime patch leaves nothing to re-apply.
 
+## Self-check
+
+Everything this plugin adds beyond the official `inputTriggers.registerSource`
+pipeline hangs off two literals in DSH core:
+
+- `ui-input-trigger` detects only `/` and `@` (`type TriggerChar = '/' | '@'`),
+  so `client.js` hooks `InputTriggerController.prototype.track`;
+- `ui-conversation`'s plain-text scan is `/(^|\s)([/@])([\w-]+)/g`, so the
+  host half rewrites the served bytes.
+
+Run the check after every DSH upgrade and before shipping a change to either
+patch:
+
+```sh
+node check-core-surface.mjs           # auto-locate installed DSH homes
+node check-core-surface.mjs --root <node_modules/@deepseek-ai>
+node check-core-surface.mjs --json
+```
+
+It prints one line per installed surface, quotes the offending scan when one
+changed shape, exits `1` on drift, and exits `2` when no installed DSH was
+found. If upstream ever widens the scan to `$`, it reports
+`decoration-obsolete`: the decoration patch and the `TEXT_REF_PATCH_VERSION`
+salt can then be deleted.
+
 ## Design notes
 
 - The trigger char is deliberately fixed at `$`. The host and client halves must
@@ -164,3 +195,7 @@ served-at-runtime patch leaves nothing to re-apply.
   `app.asar` and code signature stay valid.
 - `$VARS` and shell-style tokens do not open the menu: a live query must match
   `^[a-z0-9-]*$`, the skill-name grammar.
+- The ranking usage table lives in `localStorage` under
+  `dsh-skill-dollar/usage`, is capped at 200 skills, and is best-effort: a
+  locked-down profile or a corrupt value degrades to host order instead of
+  throwing. It adds no runtime dependency.

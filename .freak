@@ -1,6 +1,8 @@
 # FREAK
 
-- [ ] `index.js` `installClientBundlePatch` — 依赖 `ClientModuleRegistry` 的 `bundleResource` / `captureArtifactBaseline` / `rebuilt`；DSH 升级后先核对方法名、`bundleResource` 的同步/异步契约，以及 `artifactRevision` 是否仍由文件元数据派生。记录：2026-09-26
-- [ ] `bundle-patch.mjs` — `ORIGINAL_TEXT_REF_RE` / `ORIGINAL_SLASH_END` 是按 conversation 当前构建逐字匹配；上游改扫描实现、缩进或压缩后需重取字面量，否则补丁会静默失效。记录：2026-09-26
-- [ ] `README.md §Install into DSH Desktop` — Desktop 走 generation 快照 + 重启 harness；下次核对文档步骤与 `dsh-desktop-market-installer` 的 `restartHarness` / `Cmd+Shift+R` 行为一致。记录：2026-09-26
-- [ ] `patch-core.mjs` + README 的 0.1.5 兜底段 — 若上游把 revision 改成元数据派生（或 web 升到 0.1.7+），删除兜底路径与对应说明。记录：2026-09-26
+- [ ] `index.js` `installClientBundlePatch` — 依赖 `ClientModuleRegistry` 的 `bundleResource` / `captureArtifactBaseline` / `rebuilt`；DSH 升级后先核对方法名、`bundleResource` 的同步/异步契约，以及 `artifactRevision` 是否仍由文件元数据派生。`check-core-surface.mjs` 只覆盖 `TEXT_REF_RE` 与 track/detectTrigger，不覆盖这三个方法名。记录：2026-09-28
+- [ ] `index.js` `CONVERSATION_MARKER`（`/TEXT_REF_RE|scanTextRefs/`）— 这是判断「这个 JS body 是不是 conversation bundle」的唯一依据；上游若同时改掉这两个符号名，漂移告警会重新变成静默。下次核对上游是否动过这两个名字。记录：2026-09-28
+- [ ] `bundle-patch.mjs` `ORIGINAL_TEXT_REF_RE` / `ORIGINAL_SLASH_END` — 逐字匹配当前 conversation 构建；静默失效这两轮已由 `node check-core-surface.mjs`（漂移退出 1）和 index.js 的单次 warn 兜住。上游改缩进或压缩后重取字面量，并递增 `TEXT_REF_PATCH_VERSION`。记录：2026-09-28
+- [ ] `README.md §Install into DSH Desktop` — Desktop 走 generation 快照：`profiles/web/pnpm-lock.yaml` 把 `dsh-skill-dollar` 链到 `profiles/.generations/live/<id>/node_modules/…`，`desired.json` 记录活跃 generation，dshmarket 无 CLI bin。0.2.0 的 generation 尚未重建，下次核对文档步骤与 `restartHarness` 行为。记录：2026-09-28
+- [ ] `patch-core.mjs` + README 的 0.1.5 兜底段 — 已实测 `dsh` CLI 0.1.5-rc.3 下 G5 激活通过，`package.json` 已声明该 release 兼容；但 `patch-core.mjs` 的磁盘补丁路径本轮未跑。上游若把 revision 全改成元数据派生，删除兜底路径与对应说明。记录：2026-09-28
+- [ ] `awesome-dsh-plugin` PR #6040 — 收录条目待审；合并后复查两条 README 的自动生成行，如需市场截图再在仓库根加 `screenshots.json`。记录：2026-09-28

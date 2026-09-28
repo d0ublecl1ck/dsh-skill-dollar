@@ -13,6 +13,10 @@ window.__ModuleLoader__.load({
     var WORD_CHAR = /[\p{L}\p{N}_]/u
     // A live query must stay inside the skill-name grammar so $VARS/$1 never open the menu.
     var SKILL_QUERY = /^[a-z0-9-]*$/
+    // Ranking tie-break storage: a preference hint, not a ledger, so it is
+    // capped, and a locked-down profile simply degrades to host order.
+    var USAGE_KEY = 'dsh-skill-dollar/usage'
+    var USAGE_LIMIT = 200
 
     // Detect a live $query token under the caret.
     // @returns the token start/query/position, or null.
@@ -94,8 +98,12 @@ window.__ModuleLoader__.load({
       }
     }
 
-    // Candidate ranking: case-insensitive ordered subsequence, prefix hits
-    // first, ties keep host order (the slash menu rankByName contract).
+    // Candidate ranking. Match quality is the primary key: a name prefix beats
+    // a name substring, which beats a scattered subsequence, which beats a
+    // description-only hit. Ties then prefer the most recently picked skill,
+    // then the most frequently picked, then the host's own order. The usage
+    // table is a plain object so the ordering stays a pure function and can be
+    // asserted without a browser.
     function isSubsequence(needle, haystack) {
       var at = 0
       for (var i = 0; i < haystack.length && at < needle.length; i += 1) {
@@ -104,21 +112,103 @@ window.__ModuleLoader__.load({
       return at === needle.length
     }
 
-    function rankSkills(skills, query) {
+    // One skill's usage record, or undefined. Own-property only, so a table
+    // keyed by a prototype name cannot leak a bogus record.
+    function usageOf(usage, name) {
+      if (usage === null || usage === undefined || typeof usage !== 'object') return undefined
+      if (!Object.prototype.hasOwnProperty.call(usage, name)) return undefined
+      var record = usage[name]
+      if (record === null || typeof record !== 'object') return undefined
+      return record
+    }
+
+    function rankSkills(skills, query, usage) {
       var needle = (query === undefined || query === null ? '' : String(query)).toLowerCase()
       var ranked = []
       for (var i = 0; i < skills.length; i += 1) {
         var skill = skills[i]
         var name = String(skill.name).toLowerCase()
-        var score
-        if (needle === '') score = 0
-        else if (name.startsWith(needle)) score = 0
-        else if (isSubsequence(needle, name)) score = 1
+        var description = typeof skill.description === 'string' ? skill.description.toLowerCase() : ''
+        var tier
+        if (needle === '') tier = 0
+        else if (name.startsWith(needle)) tier = 0
+        else if (name.indexOf(needle) !== -1) tier = 1
+        else if (isSubsequence(needle, name)) tier = 2
+        else if (description !== '' && description.indexOf(needle) !== -1) tier = 3
         else continue
-        ranked.push({ skill: skill, score: score, index: i })
+        var record = usageOf(usage, skill.name)
+        ranked.push({
+          skill: skill,
+          tier: tier,
+          lastUsedAt: record === undefined ? 0 : Number(record.lastUsedAt) || 0,
+          count: record === undefined ? 0 : Number(record.count) || 0,
+          index: i,
+        })
       }
-      ranked.sort(function (a, b) { return a.score - b.score || a.index - b.index })
+      ranked.sort(function (a, b) {
+        return a.tier - b.tier || b.lastUsedAt - a.lastUsedAt || b.count - a.count || a.index - b.index
+      })
       return ranked.map(function (entry) { return entry.skill })
+    }
+
+    // A menu pick is the only usage signal the client can observe: a hand-typed
+    // $name and a picked one are the same gesture, but only a pick passes
+    // through onPick.
+    function loadUsage(storage) {
+      try {
+        var raw = storage === null || storage === undefined ? null : storage.getItem(USAGE_KEY)
+        if (typeof raw !== 'string' || raw === '') return {}
+        var parsed = JSON.parse(raw)
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+        return parsed
+      } catch (error) {
+        return {}
+      }
+    }
+
+    function pruneUsage(usage) {
+      var names = Object.keys(usage)
+      if (names.length <= USAGE_LIMIT) return usage
+      names.sort(function (a, b) {
+        var left = usageOf(usage, a)
+        var right = usageOf(usage, b)
+        return (right === undefined ? 0 : Number(right.lastUsedAt) || 0) - (left === undefined ? 0 : Number(left.lastUsedAt) || 0)
+      })
+      var kept = {}
+      for (var i = 0; i < USAGE_LIMIT; i += 1) kept[names[i]] = usage[names[i]]
+      return kept
+    }
+
+    function recordUsage(usage, name, now) {
+      var next = {}
+      if (usage !== null && usage !== undefined && typeof usage === 'object') {
+        for (var key of Object.keys(usage)) next[key] = usage[key]
+      }
+      var record = usageOf(next, name)
+      next[name] = {
+        count: (record === undefined ? 0 : Number(record.count) || 0) + 1,
+        lastUsedAt: now,
+      }
+      return pruneUsage(next)
+    }
+
+    function saveUsage(storage, usage) {
+      try {
+        if (storage !== null && storage !== undefined && typeof storage.setItem === 'function') {
+          storage.setItem(USAGE_KEY, JSON.stringify(usage))
+        }
+      } catch (error) {
+        console.error('[skill-dollar] could not persist skill usage', error)
+      }
+    }
+
+    // localStorage can throw on a locked-down profile; usage is best-effort.
+    function browserStorage() {
+      try {
+        return typeof localStorage === 'undefined' ? undefined : localStorage
+      } catch (error) {
+        return undefined
+      }
     }
 
     // Client plugin body: register the '$' candidate source over the skill catalog.
@@ -128,6 +218,8 @@ window.__ModuleLoader__.load({
       var inputTriggers = ctx.inputTriggers
       var catalogs = new Map()
       var lexiconListeners = new Map()
+      var storage = browserStorage()
+      var usage = loadUsage(storage)
 
       function notifyLexicon(sessionId) {
         var listeners = lexiconListeners.get(sessionId)
@@ -178,7 +270,7 @@ window.__ModuleLoader__.load({
         async candidates(session, request) {
           var list = await fetchCatalog(session.sessionId)
           if (request.signal.aborted) return []
-          return rankSkills(list, request.query).map(function (skill) {
+          return rankSkills(list, request.query, usage).map(function (skill) {
             var candidate = { name: skill.name }
             if (typeof skill.description === 'string') candidate.description = skill.description
             return candidate
@@ -206,6 +298,8 @@ window.__ModuleLoader__.load({
           }
         },
         onPick(pick) {
+          usage = recordUsage(usage, pick.candidate.name, Date.now())
+          saveUsage(storage, usage)
           return { text: TRIGGER + pick.candidate.name + ' ' }
         },
       }
@@ -221,6 +315,16 @@ window.__ModuleLoader__.load({
           clearAll()
         }
       }, 'skill-dollar: dollar source')
+    }
+
+    // Test-only surface, asserted by test-skill-rank.mjs without a browser.
+    // Not part of the plugin contract.
+    exports.__internals = {
+      detectDollar: detectDollar,
+      rankSkills: rankSkills,
+      loadUsage: loadUsage,
+      recordUsage: recordUsage,
+      USAGE_LIMIT: USAGE_LIMIT,
     }
 
     exports.apply = apply

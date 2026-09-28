@@ -3,6 +3,7 @@ import {
   CONVERSATION_PACKAGE,
   ORIGINAL_TEXT_REF_RE,
   TEXT_REF_PATCH_SALT_MS,
+  detectBundleState,
   isConversationBundlePath,
   patchConversationBundle,
 } from './bundle-patch.mjs'
@@ -169,7 +170,15 @@ function patchBundleResponse(method, url, response) {
     if (cached !== undefined) return { ...response, body: cached }
   }
   const source = decodeBundle(body)
-  if (source === undefined || !source.includes(ORIGINAL_TEXT_REF_RE)) return response
+  if (source === undefined) return response
+  const state = detectBundleState(source)
+  if (state.state === 'patched') return response
+  if (state.state !== 'original') {
+    // Only the conversation bundle carries the scan; anything else passes
+    // through silently. This one is a genuine blind spot and must be loud.
+    if (CONVERSATION_MARKER.test(source)) warnSurfaceDrift(cacheKey, state.line)
+    return response
+  }
   const patched = patchConversationBundle(source)
   if (patched === source) return response
   const bytes = bundleEncoder.encode(patched)
@@ -206,6 +215,33 @@ const bundleEncoder = new TextEncoder()
 /** Patched bodies keyed by immutable plugin URL, so a combo is decoded once. */
 const patchedBodies = new Map()
 const PATCHED_BODY_LIMIT = 32
+
+/**
+ * Marker of the bundle that owns the scan. Used only to decide whether a
+ * drifted (unpatchable) body deserves a warning; unrelated JavaScript bundles
+ * carry none of these and pass through silently.
+ */
+const CONVERSATION_MARKER = /TEXT_REF_RE|scanTextRefs/
+
+/** URLs whose drift was already reported, so one boot warns once per bundle. */
+const warnedSurfaces = new Set()
+
+/**
+ * Report a scan this plugin could not patch. Silent failure is the one outcome
+ * that must not happen: it would leave `$name` plain text with no explanation.
+ * @param url - served bundle URL, or undefined.
+ * @param line - the unrecognised scan line, when one was found.
+ */
+function warnSurfaceDrift(url, line) {
+  const key = typeof url === 'string' ? url : '<unknown>'
+  if (warnedSurfaces.has(key)) return
+  warnedSurfaces.add(key)
+  console.warn(
+    '[skill-dollar] core surface drift: the composer reference scan changed shape, so `$name` will not be highlighted. ' +
+    (line === undefined ? 'TEXT_REF_RE was not found in the served bundle.' : 'Found: ' + line) +
+    ' Update bundle-patch.mjs, then run `node check-core-surface.mjs`.',
+  )
+}
 
 /**
  * Append the loaded skill body for every `$name` gesture in the claimed user

@@ -45,6 +45,27 @@ export const TEXT_REF_PATCH_VERSION = 1
 export const TEXT_REF_PATCH_SALT_MS = TEXT_REF_PATCH_VERSION * 1000
 
 /**
+ * Classify one bundle's plain-text reference scan.
+ *
+ * The plugin depends on two literals inside
+ * @deepseek-ai/dsh-client-ui-conversation. When DSH reformats or widens either
+ * one the `$` patches stop applying, so every consumer reports a state
+ * instead of staying silent: 'original' (patch required and applicable),
+ * 'patched' (the bundle already scans `$`, so the patch is obsolete), 'drift'
+ * (a scan is present but in an unknown shape; `line` carries it), or
+ * 'absent' (no source at all).
+ * @param source - candidate bundle text.
+ * @returns the state, plus the offending scan line when one was found.
+ */
+export function detectBundleState(source) {
+  if (typeof source !== 'string' || source === '') return { state: 'absent' }
+  if (source.includes(PATCHED_TEXT_REF_RE)) return { state: 'patched' }
+  if (source.includes(ORIGINAL_TEXT_REF_RE)) return { state: 'original' }
+  const scanned = /const TEXT_REF_RE = [^\n]*/.exec(source)
+  return { state: 'drift', line: scanned === null ? undefined : scanned[0] }
+}
+
+/**
  * Whether source already carries the `$` variant of the scan.
  * @param source - candidate bundle text.
  * @returns whether both substitutions are present.

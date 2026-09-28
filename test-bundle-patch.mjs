@@ -120,6 +120,43 @@ const patchedResource = registry.bundleResource
 installClientBundlePatch(fakeCtx)
 assert.equal(registry.bundleResource, patchedResource, 'the registry is wrapped once')
 
+// 7. A reformatted scan is never silent: the served bundle is left untouched
+// and the drift is reported once, because a dead $ decoration that logs
+// nothing is exactly the failure this plugin must not have.
+const DRIFTED_SNIPPET = [
+  'const TEXT_REF_RE = /(^|\\s)([/@#])([\\w-]+)/g;',
+  'if (trigger === "/" && !SLASH_TOKEN_END_RE.test(draft.slice(m.index + m[0].length))) continue;',
+].join('\n')
+const UNRELATED_JS = 'const value = 1; export { value }'
+const driftRegistry = {
+  table: new Map([['@deepseek-ai/dsh-client-ui-conversation', { entry: { rev: 'r' } }]]),
+  rebuilt() {},
+  captureArtifactBaseline(clientPath) {
+    return { path: clientPath, mtimeMs: 1000, ctimeMs: 1000, size: 10 }
+  },
+  bundleResource(method, url) {
+    const source = url.includes('drifted') ? DRIFTED_SNIPPET : UNRELATED_JS
+    return { status: 200, headers: { 'content-type': 'text/javascript; charset=utf-8' }, body: encoder.encode(source) }
+  },
+}
+installClientBundlePatch({ inject(dependencies, callback) { callback({ clientModules: driftRegistry }) } })
+
+const warnings = []
+const originalWarn = console.warn
+console.warn = (...args) => warnings.push(args.join(' '))
+try {
+  const drifted = await driftRegistry.bundleResource('GET', '/plugins/??drifted&rev=1')
+  assert.equal(decoder.decode(drifted.body), DRIFTED_SNIPPET, 'a drifted bundle is served untouched')
+  await driftRegistry.bundleResource('GET', '/plugins/??drifted&rev=1')
+  await driftRegistry.bundleResource('GET', '/plugins/??unrelated&rev=1')
+} finally {
+  console.warn = originalWarn
+}
+assert.equal(warnings.length, 1, 'drift is reported once per URL, not once per request: ' + JSON.stringify(warnings))
+assert.ok(warnings[0].includes('drift'), 'the warning names the condition: ' + warnings[0])
+assert.ok(warnings[0].includes('[/@#]'), 'the warning quotes the scan it could not patch: ' + warnings[0])
+assert.ok(!warnings.some((warning) => warning.includes('unrelated')), 'unrelated bundles never warn')
+
 // 6. Decoration semantics: the patched trigger class matches $name with the
 // same boundaries the shipped /name rule uses.
 const TOKEN = /(^|\s)([/@$])([\w-]+)/g
